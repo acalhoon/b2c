@@ -93,10 +93,9 @@ writeCFile c =
     hPutStrLn outh $ "};"
     return $ total
 
-wB outh inh = execWriterT $ writeFileBytes outh inh
-
+processInputFiles :: Handle -> [FilePath] -> IO Int
 processInputFiles outh fs = do
-  s <- forM fs $ \fname -> withFile fname ReadMode $ wB outh
+  s <- forM fs $ \fname -> withFile fname ReadMode (execWriterT . writeFileBytes outh)
   return $ sum . map getSum $ s
 
 writeFileBytes :: Handle -> Handle -> WriterT (Sum Int) IO ()
