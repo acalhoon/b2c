@@ -99,7 +99,7 @@ processInputFiles outh fs = do
   s <- forM fs $ \fname -> withFile fname ReadMode $ \inh -> do
          hSetBinaryMode inh True
          execWriterT . writeFileBytes outh $ inh
-  return $ sum . map getSum $ s
+  return $ foldr (\x acc -> getSum x + acc) 0 s
 
 writeFileBytes :: Handle -> Handle -> WriterT (Sum Int) IO ()
 writeFileBytes outh inh = do
