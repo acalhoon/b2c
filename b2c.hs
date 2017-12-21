@@ -84,6 +84,7 @@ processConfig c = do
   total <- writeCFile c
   writeHFile c total
 
+writeCFile :: Config -> IO Int
 writeCFile c =
   withFile (cfile c) WriteMode $ \outh -> do
     hPutStrLn outh $ "#include \"" ++ hfile c ++ "\""
@@ -125,6 +126,7 @@ hRead n handle = do
     Nothing -> return []
     Just c  -> (c :) <$> hRead (n-1) handle
 
+writeHFile :: Config -> Int -> IO ()
 writeHFile c arrlen =
   withFile (hfile c) WriteMode $ \outh -> do
     hPutStrLn outh $ "#ifndef " ++ guardV
