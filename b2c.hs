@@ -96,7 +96,9 @@ writeCFile c =
 
 processInputFiles :: Handle -> [FilePath] -> IO Int
 processInputFiles outh fs = do
-  s <- forM fs $ \fname -> withFile fname ReadMode (execWriterT . writeFileBytes outh)
+  s <- forM fs $ \fname -> withFile fname ReadMode $ \inh -> do
+         hSetBinaryMode inh True
+         execWriterT . writeFileBytes outh $ inh
   return $ sum . map getSum $ s
 
 writeFileBytes :: Handle -> Handle -> WriterT (Sum Int) IO ()
