@@ -64,7 +64,10 @@ parseVarOpt fs = case [n | Var n <- fs] of
 
 parseInputFiles :: [String] -> Either Error [String]
 parseInputFiles [] = Left "No input files specified."
-parseInputFiles ns = Right ns
+parseInputFiles ns = case filter (=="-") ns of
+  []    -> Right ns
+  ["-"] -> Right ns
+  _     -> Left "STDIN '-' option can only be provided once."
 
 handleOptErrors :: [String] -> Either Error ()
 handleOptErrors [] = Right ()
@@ -94,9 +97,13 @@ writeCFile c =
     hPutStrLn outh $ "};"
     return total
 
+useInputFile :: String -> (Handle -> IO r) -> IO r
+useInputFile "-"  f = f stdin
+useInputFile name f = withFile name ReadMode f
+
 processInputFiles :: Handle -> [FilePath] -> IO Int
 processInputFiles outh fs = do
-  s <- forM fs $ \fname -> withFile fname ReadMode $ \inh -> do
+  s <- forM fs $ \fname -> useInputFile fname $ \inh-> do
          hSetBinaryMode inh True
          execWriterT . writeFileBytes outh $ inh
   return $ foldr (\x acc -> getSum x + acc) 0 s
