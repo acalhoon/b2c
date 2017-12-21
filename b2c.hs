@@ -92,7 +92,7 @@ writeCFile c =
     hPutStrLn outh $ "const uint8_t " ++ variable c ++ "[] = {"
     total <- processInputFiles outh $ files c
     hPutStrLn outh $ "};"
-    return $ total
+    return total
 
 processInputFiles :: Handle -> [FilePath] -> IO Int
 processInputFiles outh fs = do
