@@ -124,7 +124,7 @@ hRead n handle = do
   mc <- hTryGetChar handle
   case mc of
     Nothing -> return []
-    Just c  -> (c :) <$> hRead (n-1) handle
+    Just c  -> (c:) <$> hRead (n-1) handle
 
 writeHFile :: Config -> Int -> IO ()
 writeHFile c arrlen =
