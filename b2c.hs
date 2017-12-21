@@ -82,7 +82,7 @@ parseOptions (opts, files, errs) = do
 processConfig :: Config -> IO ()
 processConfig c = do
   total <- writeCFile c
-  writeHFile c $ sum total
+  writeHFile c total
 
 writeCFile c =
   withFile (cfile c) WriteMode $ \outh -> do
@@ -97,13 +97,14 @@ wB outh inh = execWriterT $ writeFileBytes outh inh
 
 processInputFiles outh fs = do
   s <- forM fs $ \fname -> withFile fname ReadMode $ wB outh
-  return $ concat s
+  return $ sum . map getSum $ s
 
+writeFileBytes :: Handle -> Handle -> WriterT (Sum Int) IO ()
 writeFileBytes outh inh = do
   eof <- liftIO $ hIsEOF inh
   unless eof $ do
     cs <- liftIO $ hRead 16 inh
-    tell $ [length cs]
+    tell (Sum $ length cs)
     liftIO $ dumpLine cs
     writeFileBytes outh inh
     where dumpLine cs = do
