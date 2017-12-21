@@ -7,6 +7,8 @@ import Data.Monoid
 import Data.List
 import Data.Char
 import Text.Printf
+import Control.Monad.Trans.Writer
+import Control.Monad.IO.Class
 
 type Error = String
 
@@ -78,27 +80,31 @@ parseOptions (opts, files, errs) = do
   where buildConfig file var ins = Config { cfile = file ++ ".c", hfile = file ++ ".h", variable = var, files = ins }
 
 processConfig :: Config -> IO ()
-processConfig c = writeCFile c >> writeHFile c
+processConfig c = do
+  total <- writeCFile c
+  writeHFile c $ sum total
 
-writeCFile :: Config -> IO ()
 writeCFile c =
   withFile (cfile c) WriteMode $ \outh -> do
     hPutStrLn outh $ "#include \"" ++ hfile c ++ "\""
     hPutStrLn outh $ ""
     hPutStrLn outh $ "const uint8_t " ++ variable c ++ "[] = {"
-    processInputFiles outh $ files c
+    total <- processInputFiles outh $ files c
     hPutStrLn outh $ "};"
+    return $ total
 
-processInputFiles :: Handle -> [FilePath] -> IO ()
-processInputFiles outh fs =
-  forM_ fs $ \fname -> withFile fname ReadMode $ writeFileBytes outh
+wB outh inh = execWriterT $ writeFileBytes outh inh
 
-writeFileBytes :: Handle -> Handle -> IO ()
+processInputFiles outh fs = do
+  s <- forM fs $ \fname -> withFile fname ReadMode $ wB outh
+  return $ concat s
+
 writeFileBytes outh inh = do
-  eof <- hIsEOF inh
+  eof <- liftIO $ hIsEOF inh
   unless eof $ do
-    cs <- hRead 16 inh
-    dumpLine cs
+    cs <- liftIO $ hRead 16 inh
+    tell $ [length cs]
+    liftIO $ dumpLine cs
     writeFileBytes outh inh
     where dumpLine cs = do
             hPutStr outh "  "
@@ -119,15 +125,13 @@ hRead n handle = do
     Nothing -> return []
     Just c  -> (c :) <$> hRead (n-1) handle
 
-writeHFile :: Config -> IO ()
-writeHFile c =
+writeHFile c arrlen =
   withFile (hfile c) WriteMode $ \outh -> do
     hPutStrLn outh $ "#ifndef " ++ guardV
     hPutStrLn outh $ "#define " ++ guardV
     hPutStrLn outh $ "#include <stdint.h>"
     hPutStrLn outh $ ""
-    -- TODO: Need to determine the output array length
-    hPutStrLn outh $ "#define " ++ lengthV ++ " (uint32_t)(" ++ show 1000 ++ "UL)"
+    hPutStrLn outh $ "#define " ++ lengthV ++ " (uint32_t)(" ++ show arrlen ++ "UL)"
     hPutStrLn outh $ "extern const uint8_t " ++ variable c ++ "["++ lengthV ++ "];"
     hPutStrLn outh $ ""
     hPutStrLn outh $ "#endif /* " ++ guardV ++ " */"
