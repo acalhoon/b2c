@@ -1,16 +1,14 @@
 import System.Console.GetOpt
 import System.Environment
 import System.IO
-import System.Exit
-import Control.Monad
-import Data.Monoid
-import Data.List
-import Data.Char
-import Text.Printf
-import Control.Monad.Trans.Writer
-import Control.Monad.IO.Class
+import System.Exit (exitFailure)
+import Control.Monad (foldM, mzero)
+import Data.Char (toUpper)
+import Text.Printf (PrintfArg, printf)
+import Data.List.Split (chunksOf)
 
 type Error = String
+type OutArrayLen = Integer
 
 data Flag = File String
           | Var String
@@ -28,11 +26,10 @@ description name = name ++ " -- Converts input data into a C array."
 usageError :: String -> IO ()
 usageError e = do
   name <- getProgName
-  putError e
-  putError $ description name
-  putError $ usageInfo (usage name) arguments
+  let desc = description name
+  let use  = usageInfo (usage name) arguments
+  hPutStr stderr $ unlines [e, desc, use]
   exitFailure
-  where putError = hPutStrLn stderr
 
 arguments :: [OptDescr Flag]
 arguments =
@@ -42,32 +39,35 @@ arguments =
 
 main :: IO ()
 main = do
-  args <- fmap (getOpt Permute arguments) getArgs
+  args <- readArgs
   case parseOptions args of
     Left err -> usageError err
-    Right config -> processConfig config
+    Right config -> runConfig config
   where readArgs = fmap (getOpt Permute arguments) getArgs
 
 parseFileOpt :: [Flag] -> Either Error FilePath
-parseFileOpt fs = case [n | File n <- fs] of 
-  [n] -> Right n
-  []  -> Left "No file name option provided."
-  _   -> Left "Multiple file name options provided."
+parseFileOpt fs =
+  case [n | File n <- fs] of 
+    [n] -> Right n
+    []  -> Left "No file name option provided."
+    _   -> Left "Multiple file name options provided."
 
 parseVarOpt :: [Flag] -> Either Error String
-parseVarOpt fs = case [n | Var n <- fs] of
-  [n] -> parseVarName n
-  []  -> Left "No file name option provided."
-  _   -> Left "Multiple file name options provided."
+parseVarOpt fs =
+  case [n | Var n <- fs] of
+    [n] -> parseVarName n
+    []  -> Left "No file name option provided."
+    _   -> Left "Multiple file name options provided."
   where parseVarName "" = Left "The variable name cannot be blank."
         parseVarName n  = Right n
 
 parseInputFiles :: [String] -> Either Error [String]
 parseInputFiles [] = Left "No input files specified."
-parseInputFiles ns = case filter (=="-") ns of
-  []    -> Right ns
-  ["-"] -> Right ns
-  _     -> Left "STDIN '-' option can only be provided once."
+parseInputFiles ns =
+  case filter (=="-") ns of
+    []    -> Right ns
+    ["-"] -> Right ns
+    _     -> Left "STDIN '-' option can only be provided once."
 
 handleOptErrors :: [String] -> Either Error ()
 handleOptErrors [] = Right ()
@@ -80,72 +80,60 @@ parseOptions (opts, files, errs) = do
   var <- parseVarOpt opts
   ins <- parseInputFiles files
   return $ buildConfig file var ins
-  where buildConfig file var ins = Config { cfile = file ++ ".c", hfile = file ++ ".h", variable = var, files = ins }
+  where buildConfig file var ins = Config {
+            cfile = file ++ ".c"
+          , hfile = file ++ ".h"
+          , variable = var
+          , files = ins
+          }
 
-processConfig :: Config -> IO ()
-processConfig c = do
-  total <- writeCFile c
-  writeHFile c total
+runConfig :: Config -> IO ()
+runConfig c = createCFile c >>= createHFile c
 
-writeCFile :: Config -> IO Int
-writeCFile c =
-  withFile (cfile c) WriteMode $ \outh -> do
-    hPutStrLn outh $ "#include \"" ++ hfile c ++ "\""
-    hPutStrLn outh $ ""
-    hPutStrLn outh $ "const uint8_t " ++ variable c ++ "[] = {"
-    total <- processInputFiles outh $ files c
-    hPutStrLn outh $ "};"
-    return total
+createCFile :: Config -> IO OutArrayLen
+createCFile c = withFile (cfile c) WriteMode $ writeCFile c
 
-useInputFile :: String -> (Handle -> IO r) -> IO r
-useInputFile "-"  f = f stdin
-useInputFile name f = withFile name ReadMode f
+writeCFile :: Config -> Handle -> IO OutArrayLen
+writeCFile c outh = do
+  hPutStrLn outh $ "#include \"" ++ hfile c ++ "\""
+  hPutStrLn outh $ ""
+  hPutStrLn outh $ "const uint8_t " ++ variable c ++ "[] = {"
+  total <- writeArrayFromFiles outh $ files c
+  hPutStrLn outh $ "};"
+  return total
 
-processInputFiles :: Handle -> [FilePath] -> IO Int
-processInputFiles outh fs = do
-  s <- forM fs $ \fname -> useInputFile fname $ \inh-> do
-         hSetBinaryMode inh True
-         execWriterT . writeFileBytes outh $ inh
-  return $ foldr (\x acc -> getSum x + acc) 0 s
+writeArrayFromFiles :: Handle -> [FilePath] -> IO OutArrayLen
+writeArrayFromFiles outh = foldM (\acc fname -> (+acc) <$> withInFile fname (writeArrayBytes outh fname)) 0
+  where withInFile "-" f = f stdin
+        withInFile n   f = withFile n ReadMode f
 
-writeFileBytes :: Handle -> Handle -> WriterT (Sum Int) IO ()
-writeFileBytes outh inh = do
-  eof <- liftIO $ hIsEOF inh
-  unless eof $ do
-    cs <- liftIO $ hRead 16 inh
-    tell (Sum $ length cs)
-    liftIO $ dumpLine cs
-    writeFileBytes outh inh
-    where dumpLine cs = do
-            hPutStr outh "  "
-            hPutStrLn outh . concatMap formatByte $ cs
-          formatByte :: (PrintfArg a) => a -> String
-          formatByte = printf "0x%02X, "
+writeArrayBytes :: Handle -> FilePath -> Handle -> IO OutArrayLen
+writeArrayBytes outh fname inh = do
+  hSetBinaryMode inh True
+  length <- hFileSize inh
+  contents <- hGetContents inh
+  hPutStrLn outh $ "  /* -- Start of File: \"" ++ fname ++ "\" -- */"
+  toArray contents
+  hPutStrLn outh $ "  /* -- End of File: \"" ++ fname ++ "\" -- */"
+  return length
+  where toArray = mapM_ (hPutStrLn outh) . fmap toArrayLine . chunksOf 16
+        formatByte = printf "0x%02X,"
+        toArrayLine = ("  "++) . concatMap formatByte
 
-hTryGetChar :: Handle -> IO (Maybe Char)
-hTryGetChar h = do
-   eof <- hIsEOF h
-   if eof then return mzero else Just <$> hGetChar h
+createHFile :: Config -> OutArrayLen -> IO ()
+createHFile c arrlen = withFile (hfile c) WriteMode $ writeHFile c arrlen
 
-hRead :: (Integral a) => a -> Handle -> IO String
-hRead 0 _ = return []
-hRead n handle = do
-  mc <- hTryGetChar handle
-  case mc of
-    Nothing -> return []
-    Just c  -> (c:) <$> hRead (n-1) handle
-
-writeHFile :: Config -> Int -> IO ()
-writeHFile c arrlen =
-  withFile (hfile c) WriteMode $ \outh -> do
-    hPutStrLn outh $ "#ifndef " ++ guardV
-    hPutStrLn outh $ "#define " ++ guardV
-    hPutStrLn outh $ "#include <stdint.h>"
-    hPutStrLn outh $ ""
-    hPutStrLn outh $ "#define " ++ lengthV ++ " (uint32_t)(" ++ show arrlen ++ "UL)"
-    hPutStrLn outh $ "extern const uint8_t " ++ variable c ++ "["++ lengthV ++ "];"
-    hPutStrLn outh $ ""
-    hPutStrLn outh $ "#endif /* " ++ guardV ++ " */"
-      where upVname = map toUpper . variable $ c
-            guardV = upVname ++ "_H"
-            lengthV = upVname ++ "_LEN"
+writeHFile :: Config -> OutArrayLen -> Handle -> IO ()
+writeHFile c arrlen outh = hPutStr outh . unlines $ hlines
+  where vname = variable c
+        upvname = map toUpper vname
+        vguard = upvname ++ "_H"
+        vlength = upvname ++ "_LEN"
+        hlines = [ "#ifndef " ++ vguard
+                 , "#define " ++ vguard
+                 , "#include <stdint.h>"
+                 , ""
+                 , "#define " ++ vlength ++ " (uint32_t)(" ++ show arrlen ++ "UL)"
+                 , "extern const uint8_t " ++ vname ++ "["++ vlength ++ "];"
+                 , ""
+                 , "#endif /* " ++ vguard ++ " */"]
