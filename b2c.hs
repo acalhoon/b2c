@@ -1,131 +1,112 @@
-import System.Console.GetOpt
-import System.Environment
+import Options.Applicative
+import Data.Semigroup ((<>))
 import System.IO
-import System.Exit (exitFailure)
 import Control.Monad (foldM, mzero)
 import Data.Char (toUpper)
 import Text.Printf (PrintfArg, printf)
 import Data.List.Split (chunksOf)
 
-type Error = String
 type OutArrayLen = Integer
 
-data Flag = File String
-          | Var String
-  deriving (Show)
+data InputSource = Stdin
+                 | InFiles [String]
 
-data Config = Config { cfile :: FilePath, hfile :: FilePath, variable :: String, files :: [FilePath] }
-  deriving (Show)
+data Options = Options 
+  { fileName :: String
+  , varName :: String
+  , source :: InputSource
+  }
 
-usage :: String -> String
-usage name = "usage: " ++ name ++ " -o <filename> -v <varname> [files...]"
+cFileName :: Options -> String
+cFileName = (++".c") . fileName
 
-description :: String -> String
-description name = name ++ " -- Converts input data into a C array."
+hFileName :: Options -> String
+hFileName = (++".h") . fileName
 
-usageError :: String -> IO ()
-usageError e = do
-  name <- getProgName
-  let desc = description name
-  let use  = usageInfo (usage name) arguments
-  hPutStr stderr $ unlines [e, desc, use]
-  exitFailure
+fileNameParser :: Parser String
+fileNameParser = strOption
+  (  short 'o'
+  <> long "out"
+  <> metavar "TARGET"
+  <> help "Name of the output files (extensions .c and .h will be added)" 
+  )
 
-arguments :: [OptDescr Flag]
-arguments =
-  [ Option ['o'] ["out"] (ReqArg File "filename") "name of the output files (extension .c and .h will be added)"
-  , Option ['v'] ["var"] (ReqArg Var "varname"  ) "name of the variable in the output files"
-  ]
+varNameParser :: Parser String
+varNameParser = strOption
+  (  short 'v'
+  <> long "var"
+  <> metavar "VAR_NAME"
+  <> help "Name of the array variable" 
+  )
+
+sourceParser :: Parser InputSource
+sourceParser = fileParser <|> stdinParser
+  where fileParser :: Parser InputSource
+        fileParser = InFiles <$> (some . strArgument $ metavar "FILES...")
+        stdinParser :: Parser InputSource
+        stdinParser = flag' Stdin
+          (  long "stdin"
+          <> help "Read from stdin"
+          )
+
+optionsParser :: Parser Options
+optionsParser = Options
+  <$> fileNameParser
+  <*> varNameParser
+  <*> sourceParser
 
 main :: IO ()
-main = do
-  args <- readArgs
-  case parseOptions args of
-    Left err -> usageError err
-    Right config -> runConfig config
-  where readArgs = fmap (getOpt Permute arguments) getArgs
+main = b2c =<< execParser opts
+  where opts = info (optionsParser <**> helper)
+                    (fullDesc <> desc <> hdr)
+        desc = progDesc " Create TARGET.c and TARGET.h containing an array \
+                        \ named VAR_NAME consisting of the contents of \
+                        \ FILES..."
+        hdr  = header "b2c - converts input data into a C array"
 
-parseFileOpt :: [Flag] -> Either Error FilePath
-parseFileOpt fs =
-  case [n | File n <- fs] of 
-    [n] -> Right n
-    []  -> Left "No file name option provided."
-    _   -> Left "Multiple file name options provided."
+b2c :: Options -> IO()
+b2c opt = createCFile opt >>= createHFile opt
 
-parseVarOpt :: [Flag] -> Either Error String
-parseVarOpt fs =
-  case [n | Var n <- fs] of
-    [n] -> parseVarName n
-    []  -> Left "No file name option provided."
-    _   -> Left "Multiple file name options provided."
-  where parseVarName "" = Left "The variable name cannot be blank."
-        parseVarName n  = Right n
+createCFile :: Options -> IO OutArrayLen
+createCFile opt = withFile (cFileName opt) WriteMode (writeCFile opt)
 
-parseInputFiles :: [String] -> Either Error [String]
-parseInputFiles [] = Left "No input files specified."
-parseInputFiles ns =
-  case filter (=="-") ns of
-    []    -> Right ns
-    ["-"] -> Right ns
-    _     -> Left "STDIN '-' option can only be provided once."
-
-handleOptErrors :: [String] -> Either Error ()
-handleOptErrors [] = Right ()
-handleOptErrors s  = Left . concat $ s
-
-parseOptions :: ([Flag], [String], [String]) -> Either Error Config
-parseOptions (opts, files, errs) = do
-  handleOptErrors errs
-  file <- parseFileOpt opts
-  var <- parseVarOpt opts
-  ins <- parseInputFiles files
-  return $ buildConfig file var ins
-  where buildConfig file var ins = Config {
-            cfile = file ++ ".c"
-          , hfile = file ++ ".h"
-          , variable = var
-          , files = ins
-          }
-
-runConfig :: Config -> IO ()
-runConfig c = createCFile c >>= createHFile c
-
-createCFile :: Config -> IO OutArrayLen
-createCFile c = withFile (cfile c) WriteMode $ writeCFile c
-
-writeCFile :: Config -> Handle -> IO OutArrayLen
-writeCFile c outh = do
-  hPutStrLn outh $ "#include \"" ++ hfile c ++ "\""
+writeCFile :: Options -> Handle -> IO OutArrayLen
+writeCFile opt outh = do
+  hPutStrLn outh $ "#include \"" ++ hFileName opt ++ "\""
   hPutStrLn outh $ ""
-  hPutStrLn outh $ "const uint8_t " ++ variable c ++ "[] = {"
-  total <- writeArrayFromFiles outh $ files c
+  hPutStrLn outh $ "const uint8_t " ++ varName opt ++ "[] = {"
+  total <- writeArray outh (source opt)
   hPutStrLn outh $ "};"
   return total
 
-writeArrayFromFiles :: Handle -> [FilePath] -> IO OutArrayLen
-writeArrayFromFiles outh = foldM (\acc fname -> (+acc) <$> withInFile fname (writeArrayBytes outh fname)) 0
-  where withInFile "-" f = f stdin
-        withInFile n   f = withFile n ReadMode f
+writeArray :: Handle -> InputSource -> IO OutArrayLen
+writeArray outh Stdin = writeBytes outh stdin
+writeArray outh (InFiles fs) = foldM sumWrites 0 fs
+  where sumWrites acc fname = (+acc) <$> (writeFileBytes fname)
+        writeFileBytes fname = withFile fname ReadMode (writeFileArray outh fname)
 
-writeArrayBytes :: Handle -> FilePath -> Handle -> IO OutArrayLen
-writeArrayBytes outh fname inh = do
-  hSetBinaryMode inh True
-  length <- hFileSize inh
-  contents <- hGetContents inh
+writeFileArray :: Handle -> FilePath -> Handle -> IO OutArrayLen
+writeFileArray outh fname inh = do
   hPutStrLn outh $ "  /* -- Start of File: \"" ++ fname ++ "\" -- */"
-  toArray contents
+  length <- writeBytes outh inh
   hPutStrLn outh $ "  /* -- End of File: \"" ++ fname ++ "\" -- */"
   return length
-  where toArray = mapM_ (hPutStrLn outh) . fmap toArrayLine . chunksOf 16
-        formatByte = printf "0x%02X,"
-        toArrayLine = ("  "++) . concatMap formatByte
 
-createHFile :: Config -> OutArrayLen -> IO ()
-createHFile c arrlen = withFile (hfile c) WriteMode $ writeHFile c arrlen
+writeBytes :: Handle -> Handle -> IO OutArrayLen
+writeBytes outh inh = do
+  hSetBinaryMode inh True
+  contents <- hGetContents inh
+  mapM_ (hPutStrLn outh) (toLines contents)
+  return (toInteger . length $ contents)
+    where toLines = fmap (("  "++) . concatMap formatByte) . chunksOf 16
+          formatByte = printf "0x%02X,"
 
-writeHFile :: Config -> OutArrayLen -> Handle -> IO ()
-writeHFile c arrlen outh = hPutStr outh . unlines $ hlines
-  where vname = variable c
+createHFile :: Options -> OutArrayLen -> IO ()
+createHFile opt arrlen = withFile (hFileName opt) WriteMode (writeHFile opt arrlen)
+
+writeHFile :: Options -> OutArrayLen -> Handle -> IO ()
+writeHFile opt arrlen outh = hPutStr outh . unlines $ hlines
+  where vname = varName opt
         upvname = map toUpper vname
         vguard = upvname ++ "_H"
         vlength = upvname ++ "_LEN"
