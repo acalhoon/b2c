@@ -5,6 +5,9 @@ import Control.Monad (foldM, mzero)
 import Data.Char (toUpper)
 import Text.Printf (PrintfArg, printf)
 import Data.List.Split (chunksOf)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Writer (tell, execWriterT)
+import Data.Monoid (Sum(..))
 
 type OutArrayLen = Integer
 
@@ -82,24 +85,31 @@ writeCFile opt outh = do
 writeArray :: Handle -> InputSource -> IO OutArrayLen
 writeArray outh Stdin = writeBytes outh stdin
 writeArray outh (InFiles fs) = foldM sumWrites 0 fs
-  where sumWrites acc fname = (+acc) <$> (writeFileBytes fname)
+  where sumWrites acc fname = (+acc) <$> writeFileBytes fname
         writeFileBytes fname = withFile fname ReadMode (writeFileArray outh fname)
 
 writeFileArray :: Handle -> FilePath -> Handle -> IO OutArrayLen
 writeFileArray outh fname inh = do
   hPutStrLn outh $ "  /* -- Start of File: \"" ++ fname ++ "\" -- */"
-  length <- writeBytes outh inh
+  length <- writeHandleBytes outh inh
   hPutStrLn outh $ "  /* -- End of File: \"" ++ fname ++ "\" -- */"
   return length
 
-writeBytes :: Handle -> Handle -> IO OutArrayLen
-writeBytes outh inh = do
+writeHandleBytes :: Handle -> Handle -> IO OutArrayLen
+writeHandleBytes outh inh = do
   hSetBinaryMode inh True
   contents <- hGetContents inh
-  mapM_ (hPutStrLn outh) (toLines contents)
-  return (toInteger . length $ contents)
-    where toLines = fmap (("  "++) . concatMap formatByte) . chunksOf 16
-          formatByte = printf "0x%02X,"
+  writeArrayLines outh . chunksOf 16 $ contents
+
+writeArrayLines :: Handle -> [String] -> IO OutArrayLen
+writeArrayLines outh ls = do
+  writes <- execWriterT . mapM_ writeLine $ ls
+  return (getSum writes)
+  where writeLine l = do
+          tell $ Sum (toInteger . length $ l)
+          liftIO . hPutStrLn outh . toLine $ l
+        toLine = ("  "++) . concatMap formatByte
+        formatByte = printf "0x%02X,"
 
 createHFile :: Options -> OutArrayLen -> IO ()
 createHFile opt arrlen = withFile (hFileName opt) WriteMode (writeHFile opt arrlen)
