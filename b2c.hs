@@ -1,9 +1,9 @@
 import Options.Applicative
 import Data.Monoid((<>))
 import System.IO
-import Control.Monad (foldM, mzero)
+import Control.Monad (mapM)
 import Data.Char (toUpper)
-import Text.Printf (PrintfArg, printf)
+import Text.Printf (printf)
 import Data.List (foldl')
 import Data.List.Split (chunksOf)
 import Control.Monad.IO.Class (liftIO)
@@ -93,9 +93,9 @@ writeArray outh (InFiles fs) = mapM writeFileBytes fs >>= return . sum'
 writeFileArray :: Handle -> FilePath -> Handle -> IO OutArrayLen
 writeFileArray outh fname inh = do
   hPutStrLn outh $ "  /* -- Start of File: \"" ++ fname ++ "\" -- */"
-  length <- writeHandleBytes outh inh
+  len <- writeHandleBytes outh inh
   hPutStrLn outh $ "  /* -- End of File: \"" ++ fname ++ "\" -- */"
-  return length
+  return len
 
 writeHandleBytes :: Handle -> Handle -> IO OutArrayLen
 writeHandleBytes outh inh = do
