@@ -84,7 +84,7 @@ writeCFile opt outh = do
 
 writeArray :: Handle -> InputSource -> IO OutArrayLen
 writeArray outh Stdin = writeHandleBytes outh stdin
-writeArray outh (InFiles fs) = mapM writeFileBytes fs >>= return . sum'
+writeArray outh (InFiles fs) = sum' <$> mapM writeFileBytes fs
   where writeFileBytes :: FilePath -> IO OutArrayLen
         writeFileBytes fname = withFile fname ReadMode (writeFileArray outh fname)
         sum' :: [OutArrayLen] -> OutArrayLen
