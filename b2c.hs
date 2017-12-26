@@ -1,7 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
-import Options.Applicative
+import qualified Options.Applicative as OA
 import Data.Monoid((<>))
-import System.IO
+import qualified System.IO as IO
 import Control.Monad (foldM, mapM_)
 import Data.Char (toUpper)
 import Text.Printf (printf)
@@ -26,94 +26,94 @@ cFileName = (++".c") . fileName
 hFileName :: Options -> String
 hFileName = (++".h") . fileName
 
-fileNameParser :: Parser String
-fileNameParser = strOption
-  (  short 'o'
-  <> long "out"
-  <> metavar "TARGET"
-  <> help "Name of the output files (extensions .c and .h will be added)" 
+fileNameParser :: OA.Parser String
+fileNameParser = OA.strOption
+  (  OA.short 'o'
+  <> OA.long "out"
+  <> OA.metavar "TARGET"
+  <> OA.help "Name of the output files (extensions .c and .h will be added)"
   )
 
-varNameParser :: Parser String
-varNameParser = strOption
-  (  short 'v'
-  <> long "var"
-  <> metavar "VAR_NAME"
-  <> help "Name of the array variable" 
+varNameParser :: OA.Parser String
+varNameParser = OA.strOption
+  (  OA.short 'v'
+  <> OA.long "var"
+  <> OA.metavar "VAR_NAME"
+  <> OA.help "Name of the array variable"
   )
 
-sourceParser :: Parser InputSource
-sourceParser = fileParser <|> stdinParser
-  where fileParser :: Parser InputSource
-        fileParser = InFiles <$> (some . strArgument $ metavar "FILES...")
-        stdinParser :: Parser InputSource
-        stdinParser = flag' Stdin
-          (  long "stdin"
-          <> help "Read from stdin"
+sourceParser :: OA.Parser InputSource
+sourceParser = fileParser OA.<|> stdinParser
+  where fileParser :: OA.Parser InputSource
+        fileParser = InFiles <$> (OA.some . OA.strArgument $ OA.metavar "FILES...")
+        stdinParser :: OA.Parser InputSource
+        stdinParser = OA.flag' Stdin
+          (  OA.long "stdin"
+          <> OA.help "Read from stdin"
           )
 
-optionsParser :: Parser Options
+optionsParser :: OA.Parser Options
 optionsParser = Options
   <$> fileNameParser
   <*> varNameParser
   <*> sourceParser
 
 main :: IO ()
-main = b2c =<< execParser opts
-  where opts = info (optionsParser <**> helper)
-                    (fullDesc <> desc <> hdr)
-        desc = progDesc " Create TARGET.c and TARGET.h containing an array \
-                        \ named VAR_NAME consisting of the contents of \
-                        \ FILES..."
-        hdr  = header "b2c - converts input data into a C array"
+main = b2c =<< OA.execParser opts
+  where opts = OA.info (OA.helper <*> optionsParser) $
+                        OA.fullDesc <> desc <> hdr
+        desc = OA.progDesc " Create TARGET.c and TARGET.h containing an array \
+                           \ named VAR_NAME consisting of the contents of \
+                           \ FILES..."
+        hdr  = OA.header "b2c - converts input data into a C array"
 
 b2c :: Options -> IO()
 b2c opt = createCFile opt >>= createHFile opt
 
 createCFile :: Options -> IO OutArrayLen
-createCFile opt = withFile (cFileName opt) WriteMode (writeCFile opt)
+createCFile opt = IO.withFile (cFileName opt) IO.WriteMode (writeCFile opt)
 
-writeCFile :: Options -> Handle -> IO OutArrayLen
+writeCFile :: Options -> IO.Handle -> IO OutArrayLen
 writeCFile opt outh = do
-  hPutStrLn outh $ "#include \"" ++ hFileName opt ++ "\""
-  hPutStrLn outh $ ""
-  hPutStrLn outh $ "const uint8_t " ++ varName opt ++ "[] = {"
+  IO.hPutStrLn outh $ "#include \"" ++ hFileName opt ++ "\""
+  IO.hPutStrLn outh $ ""
+  IO.hPutStrLn outh $ "const uint8_t " ++ varName opt ++ "[] = {"
   total <- writeArray outh (source opt)
-  hPutStrLn outh $ "};"
+  IO.hPutStrLn outh $ "};"
   return total
 
-writeArray :: Handle -> InputSource -> IO OutArrayLen
-writeArray outh Stdin = writeHandleBytes outh stdin
+writeArray :: IO.Handle -> InputSource -> IO OutArrayLen
+writeArray outh Stdin = writeHandleBytes outh IO.stdin
 writeArray outh (InFiles fs) = foldM sumWrites 0 fs
   where sumWrites !acc fname = (+acc) <$> writeFileBytes fname
-        writeFileBytes fname = withFile fname ReadMode (writeFileArray outh fname)
+        writeFileBytes fname = IO.withFile fname IO.ReadMode (writeFileArray outh fname)
 
-writeFileArray :: Handle -> FilePath -> Handle -> IO OutArrayLen
+writeFileArray :: IO.Handle -> FilePath -> IO.Handle -> IO OutArrayLen
 writeFileArray outh fname inh = do
-  hPutStrLn outh $ "  /* -- Start of File: \"" ++ fname ++ "\" -- */"
+  IO.hPutStrLn outh $ "  /* -- Start of File: \"" ++ fname ++ "\" -- */"
   len <- writeHandleBytes outh inh
-  hPutStrLn outh $ "  /* -- End of File: \"" ++ fname ++ "\" -- */"
+  IO.hPutStrLn outh $ "  /* -- End of File: \"" ++ fname ++ "\" -- */"
   return len
 
-writeHandleBytes :: Handle -> Handle -> IO OutArrayLen
+writeHandleBytes :: IO.Handle -> IO.Handle -> IO OutArrayLen
 writeHandleBytes outh inh = do
-  hSetBinaryMode inh True
-  contents <- hGetContents inh
+  IO.hSetBinaryMode inh True
+  contents <- IO.hGetContents inh
   writeArrayLines outh . chunksOf 16 $ contents
 
-writeArrayLines :: Handle -> [String] -> IO OutArrayLen
+writeArrayLines :: IO.Handle -> [String] -> IO OutArrayLen
 writeArrayLines outh ls = execStateT (mapM_ writeLine ls) 0
   where writeLine l = do
           modify' (+ length l)
-          liftIO . hPutStrLn outh . toLine $ l
+          liftIO . IO.hPutStrLn outh . toLine $ l
         toLine = ("  "++) . concatMap formatByte
         formatByte = printf "0x%02X,"
 
 createHFile :: Options -> OutArrayLen -> IO ()
-createHFile opt arrlen = withFile (hFileName opt) WriteMode (writeHFile opt arrlen)
+createHFile opt arrlen = IO.withFile (hFileName opt) IO.WriteMode (writeHFile opt arrlen)
 
-writeHFile :: Options -> OutArrayLen -> Handle -> IO ()
-writeHFile opt arrlen outh = hPutStr outh . unlines $ hlines
+writeHFile :: Options -> OutArrayLen -> IO.Handle -> IO ()
+writeHFile opt arrlen outh = IO.hPutStr outh . unlines $ hlines
   where vname = varName opt
         upvname = map toUpper vname
         vguard = upvname ++ "_H"
