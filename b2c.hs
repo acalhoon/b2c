@@ -30,6 +30,11 @@ import           Text.Printf               (printf)
 type CArrayLen = Int
 
 --------------------------------------------------------------------------------
+-- | The maximum number of bytes in the array output.
+maxChunkSize :: (Num a) => a
+maxChunkSize = 16
+
+--------------------------------------------------------------------------------
 -- | Input data source.
 data InputSource = Stdin              -- ^ Input coming from stdin.
                  | InFiles [FilePath] -- ^ Input coming from file(s).
@@ -155,14 +160,14 @@ writeFileArray outh fname inh = do
 
 --------------------------------------------------------------------------------
 -- | Writes the contents of an input file to the output file as array contents
--- in 16 byte chunks.
+-- in @maxChunkSize@ byte chunks.
 writeHandleBytes :: IO.Handle    -- ^ output file handle
                  -> IO.Handle    -- ^ input file handle
                  -> IO CArrayLen -- ^ length of input read from the input file
 writeHandleBytes outh inh = do
   IO.hSetBinaryMode inh True
   contents <- IO.hGetContents inh
-  writeArrayLines outh . chunksOf 16 $ contents
+  writeArrayLines outh . chunksOf maxChunkSize $ contents
 
 --------------------------------------------------------------------------------
 -- | Writes the contents of a list of strings to the output file as comma
