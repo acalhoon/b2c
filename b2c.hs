@@ -1,15 +1,14 @@
 import Options.Applicative
-import Data.Semigroup ((<>))
+import Data.Monoid((<>))
 import System.IO
 import Control.Monad (foldM, mzero)
 import Data.Char (toUpper)
 import Text.Printf (PrintfArg, printf)
 import Data.List.Split (chunksOf)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.Writer (tell, execWriterT)
-import Data.Monoid (Sum(..))
+import Control.Monad.Trans.State (modify', execStateT)
 
-type OutArrayLen = Integer
+type OutArrayLen = Int
 
 data InputSource = Stdin
                  | InFiles [String]
@@ -83,7 +82,7 @@ writeCFile opt outh = do
   return total
 
 writeArray :: Handle -> InputSource -> IO OutArrayLen
-writeArray outh Stdin = writeBytes outh stdin
+writeArray outh Stdin = writeHandleBytes outh stdin
 writeArray outh (InFiles fs) = foldM sumWrites 0 fs
   where sumWrites acc fname = (+acc) <$> writeFileBytes fname
         writeFileBytes fname = withFile fname ReadMode (writeFileArray outh fname)
@@ -102,11 +101,9 @@ writeHandleBytes outh inh = do
   writeArrayLines outh . chunksOf 16 $ contents
 
 writeArrayLines :: Handle -> [String] -> IO OutArrayLen
-writeArrayLines outh ls = do
-  writes <- execWriterT . mapM_ writeLine $ ls
-  return (getSum writes)
+writeArrayLines outh ls = execStateT (mapM_ writeLine ls) 0
   where writeLine l = do
-          tell $ Sum (toInteger . length $ l)
+          modify' (+ length l)
           liftIO . hPutStrLn outh . toLine $ l
         toLine = ("  "++) . concatMap formatByte
         formatByte = printf "0x%02X,"
