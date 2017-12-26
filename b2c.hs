@@ -1,23 +1,23 @@
 {-# LANGUAGE BangPatterns #-}
-import qualified Options.Applicative as OA
-import Data.Monoid((<>))
-import qualified System.IO as IO
-import Control.Monad (foldM, mapM_)
-import Data.Char (toUpper)
-import Text.Printf (printf)
-import Data.List.Split (chunksOf)
-import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.State (modify', execStateT)
+import           Control.Monad             (foldM, mapM_)
+import           Control.Monad.IO.Class    (liftIO)
+import           Control.Monad.Trans.State (execStateT, modify')
+import           Data.Char                 (toUpper)
+import           Data.List.Split           (chunksOf)
+import           Data.Monoid               ((<>))
+import qualified Options.Applicative       as OA
+import qualified System.IO                 as IO
+import           Text.Printf               (printf)
 
 type OutArrayLen = Int
 
 data InputSource = Stdin
                  | InFiles [String]
 
-data Options = Options 
+data Options = Options
   { fileName :: String
-  , varName :: String
-  , source :: InputSource
+  , varName  :: String
+  , source   :: InputSource
   }
 
 cFileName :: Options -> String
