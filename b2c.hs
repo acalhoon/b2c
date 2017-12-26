@@ -1,7 +1,7 @@
 import Options.Applicative
 import Data.Monoid((<>))
 import System.IO
-import Control.Monad (mapM)
+import Control.Monad (mapM, mapM_)
 import Data.Char (toUpper)
 import Text.Printf (printf)
 import Data.List (foldl')
