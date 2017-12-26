@@ -5,14 +5,14 @@ name:                b2c
 version:             0.1.0.0
 synopsis:            Creates a C array out of input from files or stdin
 -- description:         
--- license:             
+license:             BSD3
 license-file:        LICENSE
 author:              hoon
 maintainer:          a.calhoon@gmail.com
 -- copyright:           
 -- category:            
 build-type:          Simple
--- extra-source-files:  
+extra-source-files:  ChangeLog.md, README
 cabal-version:       >=1.10
 
 executable b2c
