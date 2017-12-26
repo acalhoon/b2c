@@ -4,6 +4,7 @@ import System.IO
 import Control.Monad (foldM, mzero)
 import Data.Char (toUpper)
 import Text.Printf (PrintfArg, printf)
+import Data.List (foldl')
 import Data.List.Split (chunksOf)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.State (modify', execStateT)
@@ -83,9 +84,11 @@ writeCFile opt outh = do
 
 writeArray :: Handle -> InputSource -> IO OutArrayLen
 writeArray outh Stdin = writeHandleBytes outh stdin
-writeArray outh (InFiles fs) = foldM sumWrites 0 fs
-  where sumWrites acc fname = (+acc) <$> writeFileBytes fname
+writeArray outh (InFiles fs) = mapM writeFileBytes fs >>= return . sum'
+  where writeFileBytes :: FilePath -> IO OutArrayLen
         writeFileBytes fname = withFile fname ReadMode (writeFileArray outh fname)
+        sum' :: [OutArrayLen] -> OutArrayLen
+        sum' = foldl' (+) 0
 
 writeFileArray :: Handle -> FilePath -> Handle -> IO OutArrayLen
 writeFileArray outh fname inh = do
