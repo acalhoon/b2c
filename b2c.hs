@@ -1,10 +1,10 @@
+{-# LANGUAGE BangPatterns #-}
 import Options.Applicative
 import Data.Monoid((<>))
 import System.IO
-import Control.Monad (mapM, mapM_)
+import Control.Monad (foldM, mapM_)
 import Data.Char (toUpper)
 import Text.Printf (printf)
-import Data.List (foldl')
 import Data.List.Split (chunksOf)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.State (modify', execStateT)
@@ -84,11 +84,9 @@ writeCFile opt outh = do
 
 writeArray :: Handle -> InputSource -> IO OutArrayLen
 writeArray outh Stdin = writeHandleBytes outh stdin
-writeArray outh (InFiles fs) = sum' <$> mapM writeFileBytes fs
-  where writeFileBytes :: FilePath -> IO OutArrayLen
+writeArray outh (InFiles fs) = foldM sumWrites 0 fs
+  where sumWrites !acc fname = (+acc) <$> writeFileBytes fname
         writeFileBytes fname = withFile fname ReadMode (writeFileArray outh fname)
-        sum' :: [OutArrayLen] -> OutArrayLen
-        sum' = foldl' (+) 0
 
 writeFileArray :: Handle -> FilePath -> Handle -> IO OutArrayLen
 writeFileArray outh fname inh = do
