@@ -15,7 +15,7 @@
  -}
 --------------------------------------------------------------------------------
 module Main where
-import           Control.Monad              (foldM, mapM_)
+import           Control.Monad              (foldM)
 import           Control.Monad.IO.Class     (liftIO)
 import           Control.Monad.Trans.Reader (ReaderT, runReaderT, ask, asks)
 import           Control.Monad.Trans.State  (execStateT, modify')
