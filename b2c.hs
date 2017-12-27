@@ -15,7 +15,8 @@
  -}
 --------------------------------------------------------------------------------
 module Main where
-import           Control.Monad              (foldM)
+import           Control.Arrow              ((&&&))
+import           Control.Monad              (foldM, (>=>))
 import           Control.Monad.IO.Class     (liftIO)
 import           Control.Monad.Trans.Reader (ReaderT, runReaderT, ask, asks)
 import           Control.Monad.Trans.State  (execStateT, modify')
@@ -31,22 +32,31 @@ import           Text.Printf                (printf)
 type CArrayLen = Int
 
 --------------------------------------------------------------------------------
--- | Environment Reader in IO.
-type EnvReader = ReaderT Options IO
-
---------------------------------------------------------------------------------
 -- | Input data source.
 data InputSource = Stdin              -- ^ Input coming from stdin.
                  | InFiles [FilePath] -- ^ Input coming from file(s).
 
 --------------------------------------------------------------------------------
 -- | Configurable options from the command line.
-data Options = Options
+data Options =
+  Options
   { fileName  :: String      -- ^ Output filename w/o extension.
   , varName   :: String      -- ^ C array name.
   , source    :: InputSource -- ^ Where to retrieve input from.
   , chunkSize :: Int         -- ^ Maximum number of array bytes per line.
   }
+
+--------------------------------------------------------------------------------
+-- | Environment for creating files.
+data Env =
+  Env
+  { handle  :: IO.Handle -- ^ Output file handle.
+  , options :: Options   -- ^ Command line options
+  }
+
+--------------------------------------------------------------------------------
+-- | Environment Reader in IO.
+type EnvReader = ReaderT Env IO
 
 --------------------------------------------------------------------------------
 -- | Build the C file name from command line args.
@@ -61,7 +71,8 @@ hFileName = (++".h") . fileName
 --------------------------------------------------------------------------------
 -- | A parser for the filename command line arg.
 fileNameParser :: OA.Parser String
-fileNameParser = OA.strOption
+fileNameParser =
+  OA.strOption
   (  OA.short 'o'
   <> OA.long "out"
   <> OA.metavar "TARGET"
@@ -71,7 +82,8 @@ fileNameParser = OA.strOption
 --------------------------------------------------------------------------------
 -- | A parser for the variable name command line arg.
 varNameParser :: OA.Parser String
-varNameParser = OA.strOption
+varNameParser =
+  OA.strOption
   (  OA.short 'v'
   <> OA.long "var"
   <> OA.metavar "VAR_NAME"
@@ -95,24 +107,26 @@ sourceParser = fileParser OA.<|> stdinParser
 --------------------------------------------------------------------------------
 -- | A parser for the optional chunk size command line arg.
 chunkSizeParser :: OA.Parser Int
-chunkSizeParser = OA.option (OA.auto >>= readPositive)
-  (  OA.short 'c'
-  <> OA.long "chunk"
-  <> OA.metavar "INT"
-  <> OA.value 16
-  <> OA.help "Maximum number of array bytes per line."
-  )
-  where readPositive n | n <=0     = OA.readerAbort $ OA.ErrorMsg "This option must have a positive value."
-                       | otherwise = return n
+chunkSizeParser = 
+  let readPositive n | n <= 0    = OA.readerAbort $
+                                     OA.ErrorMsg "This option must have a positive value."
+                     | otherwise = return n
+  in OA.option (OA.auto >>= readPositive)
+       (  OA.short 'c'
+       <> OA.long "chunk"
+       <> OA.metavar "INT"
+       <> OA.value 16
+       <> OA.help "Maximum number of array bytes per line."
+       )
 
 --------------------------------------------------------------------------------
 -- | A parser for all of the command line args.
 optionsParser :: OA.Parser Options
-optionsParser = Options
-  <$> fileNameParser
-  <*> varNameParser
-  <*> sourceParser
-  <*> chunkSizeParser
+optionsParser =
+  Options <$> fileNameParser
+          <*> varNameParser
+          <*> sourceParser
+          <*> chunkSizeParser
 
 --------------------------------------------------------------------------------
 -- | Parse command line options and report usage on failure.
@@ -135,96 +149,132 @@ b2c opt = createCFile opt >>= createHFile opt
 -- | Creates the target C file.
 createCFile :: Options      -- ^ command line arguments
             -> IO CArrayLen -- ^ total length of input read
-createCFile o = IO.withFile (cFileName o) IO.WriteMode (\h -> runReaderT (writeCFile h) o)
+createCFile o = 
+  let doWrite h = runReaderT writeCFile Env { handle=h, options=o }
+  in IO.withFile (cFileName o) IO.WriteMode doWrite
 
 --------------------------------------------------------------------------------
 -- | Writes the C file with include, array definition and array contents.
-writeCFile :: IO.Handle           -- ^ output file handle
-           -> EnvReader CArrayLen -- ^ total length of input read
-writeCFile outh = do
-  o <- ask
-  liftIO $ IO.hPutStrLn outh $ "#include \"" ++ hFileName o ++ "\""
-  liftIO $ IO.hPutStrLn outh $ ""
-  liftIO $ IO.hPutStrLn outh $ "const uint8_t " ++ varName o ++ "[] = {"
-  total <- writeArray outh (source o)
-  liftIO $ IO.hPutStrLn outh $ "};"
+writeCFile :: EnvReader CArrayLen -- ^ total length of input read
+writeCFile = do
+  (h,o) <- asks $ handle &&& options
+  putLn h $ "#include \"" ++ hFileName o ++ "\""
+  putLn h $ ""
+  putLn h $ "const uint8_t " ++ varName o ++ "[] = {"
+  total <- writeArrayFromInputs $ source o
+  putLn h $ "};"
   return total
+  where putLn h = liftIO . IO.hPutStrLn h
 
 --------------------------------------------------------------------------------
 -- | Writes the contents of all of the input sources to the output file as
 -- array contents.
-writeArray :: IO.Handle           -- ^ output file handle
-           -> InputSource         -- ^ input data source
-           -> EnvReader CArrayLen -- ^ total length of input read
-writeArray outh Stdin = writeHandleBytes outh IO.stdin
-writeArray outh (InFiles fs) = foldM sumWrites 0 fs
-  where sumWrites !acc fname = (+acc) <$> writeFileBytes fname
-        writeFileBytes fname = ask >>= \o -> 
-          liftIO $ IO.withFile fname IO.ReadMode (\h -> runReaderT (writeFileArray outh fname h) o)
+writeArrayFromInputs :: InputSource         -- ^ input data source
+                     -> EnvReader CArrayLen -- ^ total length of input read
+writeArrayFromInputs Stdin = writeArrayFromStdin
+writeArrayFromInputs (InFiles fs) = writeArrayFromFiles fs
+
+--------------------------------------------------------------------------------
+-- | Write the array using stdin as the input source.
+writeArrayFromStdin :: EnvReader CArrayLen
+writeArrayFromStdin = liftIO (getBinaryContents IO.stdin) >>= writeArray
+
+--------------------------------------------------------------------------------
+-- | Write the array using files as the input source.
+writeArrayFromFiles :: [FilePath]
+                    -> EnvReader CArrayLen
+writeArrayFromFiles = foldM sumWrite 0
+  where sumWrite !acc fname = (+acc) <$> (ask >>= writeSubArray fname)
+        writeSubArray fname env =
+          liftIO . withInputFile fname $ \s ->
+          runReaderT (writeFileArray fname s) env
+
+--------------------------------------------------------------------------------
+-- | Perform @action@ on @file@ with that file open for reading in binary mode.
+withInputFile :: FilePath         -- ^ file path
+              -> (String -> IO a) -- ^ action to perform
+              -> IO a
+withInputFile name action =
+  IO.withBinaryFile name IO.ReadMode $ IO.hGetContents >=> action
+
+--------------------------------------------------------------------------------
+-- | Get the contents of a file handle in binary mode.
+getBinaryContents :: IO.Handle -> IO String
+getBinaryContents h = IO.hSetBinaryMode h True >> IO.hGetContents h
 
 --------------------------------------------------------------------------------
 -- | Writes the contents of a named input file to the output file as array
 -- contents.  The array contents are pre- and post-fixed with comments
 -- including the input file's full path.
-writeFileArray :: IO.Handle           -- ^ output file handle
-               -> FilePath            -- ^ input file path
-               -> IO.Handle           -- ^ input file handle
+writeFileArray :: FilePath            -- ^ input file path
+               -> String              -- ^ file contents
                -> EnvReader CArrayLen -- ^ length of input read from the input file
-writeFileArray outh fname inh = do
-  liftIO $ IO.hPutStrLn outh $ "  /* -- Start of File: \"" ++ fname ++ "\" -- */"
-  len <- writeHandleBytes outh inh
-  liftIO $ IO.hPutStrLn outh $ "  /* -- End of File: \"" ++ fname ++ "\" -- */"
+writeFileArray fname s = do
+  h <- asks handle
+  putLn h $ "  /* -- Start of File: \"" ++ fname ++ "\" -- */"
+  len <- writeArray s
+  putLn h $ "  /* -- End of File: \"" ++ fname ++ "\" -- */"
   return len
+  where putLn h = liftIO . IO.hPutStrLn h
 
 --------------------------------------------------------------------------------
 -- | Writes the contents of an input file to the output file as array contents
 -- in @maxChunkSize@ byte chunks.
-writeHandleBytes :: IO.Handle           -- ^ output file handle
-                 -> IO.Handle           -- ^ input file handle
-                 -> EnvReader CArrayLen -- ^ length of input read from the input file
-writeHandleBytes outh inh = do
-  liftIO $ IO.hSetBinaryMode inh True
-  contents <- liftIO $ IO.hGetContents inh
-  sz <- asks chunkSize
-  writeArrayLines outh . chunksOf sz $ contents
+writeArray :: String              -- ^ file contents
+           -> EnvReader CArrayLen -- ^ length of input read from the input file
+writeArray s = do
+  sz <- asks (chunkSize . options)
+  writeArrayLines . chunksOf sz $ s
 
 --------------------------------------------------------------------------------
 -- | Writes the contents of a list of strings to the output file as comma
 -- separated hexidecimal byte values.
-writeArrayLines :: IO.Handle           -- ^ output file handle
-                -> [String]            -- ^ input lines
+writeArrayLines :: [String]            -- ^ input lines
                 -> EnvReader CArrayLen -- ^ sum of the lengths of the input lines
-writeArrayLines outh ls = execStateT (mapM_ writeLine ls) 0
-  where writeLine l = do
-          modify' (+ length l)
-          liftIO . IO.hPutStrLn outh . toLine $ l
-        toLine = ("  "++) . concatMap formatByte
-        formatByte = printf "0x%02X,"
+writeArrayLines ls = do
+  h <- asks handle
+  execStateT (mapM_ (writeLine h) ls) 0
+  where writeLine h l = modify' (+ length l) >> putLn h l
+        putLn h = liftIO . IO.hPutStrLn h . ("  "++) . toArrayLine
+
+--------------------------------------------------------------------------------
+-- | Converts a string of characters into a comma separated list of hexidecimal
+-- values suitable for a C array body.
+toArrayLine :: String -> String
+toArrayLine = concatMap (printf "0x%02X,")
 
 --------------------------------------------------------------------------------
 -- | Creates the target H file.
 createHFile :: Options   -- ^ command line arguments
             -> CArrayLen -- ^ length of the C array
             -> IO ()
-createHFile o arrlen = IO.withFile (hFileName o) IO.WriteMode (writeHFile o arrlen)
+createHFile o len =
+  let doWrite h = runReaderT (writeHFile len) Env { handle=h, options=o }
+  in IO.withFile (hFileName o) IO.WriteMode doWrite
 
 --------------------------------------------------------------------------------
 -- | Write the H file include guards, length #define, extern variable name
 -- reference, and a trailing include guard.
-writeHFile :: Options   -- ^ command line arguments
-           -> CArrayLen -- ^ total length of the array
-           -> IO.Handle -- ^ output file handle
-           -> IO ()
-writeHFile o arrlen outh = IO.hPutStr outh . unlines $ hlines
-  where vname = varName o
-        upvname = map toUpper vname
-        vguard = upvname ++ "_H"
-        vlength = upvname ++ "_LEN"
-        hlines = [ "#ifndef " ++ vguard
-                 , "#define " ++ vguard
-                 , "#include <stdint.h>"
-                 , ""
-                 , "#define " ++ vlength ++ " (uint32_t)(" ++ show arrlen ++ "UL)"
-                 , "extern const uint8_t " ++ vname ++ "["++ vlength ++ "];"
-                 , ""
-                 , "#endif /* " ++ vguard ++ " */"]
+writeHFile :: CArrayLen    -- ^ total length of the array
+           -> EnvReader ()
+writeHFile len = do
+  (h,o) <- asks $ handle &&& options
+  liftIO . IO.hPutStr h . unlines $ getHFileLines o len
+
+--------------------------------------------------------------------------------
+-- | A list of lines to create the H file.
+getHFileLines :: Options   -- ^ command line arguments
+              -> CArrayLen -- ^ length of the C array
+              -> [String]  -- ^ lines of the H file
+getHFileLines opt len =
+  [ "#ifndef " ++ guardDef
+  , "#define " ++ guardDef
+  , "#include <stdint.h>"
+  , ""
+  , "#define " ++ lenDef ++ " (uint32_t)(" ++ show len ++ "UL)"
+  , "extern const uint8_t " ++ varName opt ++ "["++ lenDef ++ "];"
+  , ""
+  , "#endif /* " ++ guardDef ++ " */"
+  ] where upvname  = map toUpper (varName opt)
+          guardDef = upvname ++ "_H"
+          lenDef   = upvname ++ "_LEN"
