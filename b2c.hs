@@ -258,10 +258,19 @@ getHFileLines :: Options   -- ^ command line arguments
 getHFileLines opt len =
   [ "#ifndef " ++ guardDef
   , "#define " ++ guardDef
+  , ""
+  , "#ifdef __cplusplus"
+  , "extern \"C\" {"
+  , "#endif /* _cplusplus */"
+  , ""
   , "#include <stdint.h>"
   , ""
   , "#define " ++ lenDef ++ " (uint32_t)(" ++ show len ++ "UL)"
   , "extern const uint8_t " ++ varName opt ++ "["++ lenDef ++ "];"
+  , ""
+  , "#ifdef __cplusplus"
+  , "}"
+  , "#endif /* _cplusplus */"
   , ""
   , "#endif /* " ++ guardDef ++ " */"
   ] where upvname  = map toUpper (varName opt)
