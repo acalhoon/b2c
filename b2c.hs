@@ -16,6 +16,7 @@
 --------------------------------------------------------------------------------
 module Main where
 import           Control.Arrow              ((&&&))
+import           Control.Exception          (IOException, try)
 import           Control.Monad              (foldM, (>=>))
 import           Control.Monad.IO.Class     (liftIO)
 import           Control.Monad.Trans.Reader (ReaderT, runReaderT, ask, asks)
@@ -24,6 +25,7 @@ import           Data.Char                  (toUpper)
 import           Data.List.Split            (chunksOf)
 import           Data.Monoid                ((<>))
 import qualified Options.Applicative        as OA
+import           System.Directory           (removeFile)
 import qualified System.IO                  as IO
 import           Text.Printf                (printf)
 
@@ -139,11 +141,22 @@ main = b2c =<< OA.execParser opts
                            \ FILES..."
         hdr  = OA.header "b2c - converts input data into a C array"
 
+
+--------------------------------------------------------------------------------
+-- | Try to execute an IO action that may throw an exception.
+tryIOE :: IO a -> IO (Either IOException a)
+tryIOE = try
+
 --------------------------------------------------------------------------------
 -- | Turn command line arguments into the target C and H files.
 b2c :: Options -- ^ command line arguments
     -> IO()
-b2c opt = createCFile opt >>= createHFile opt
+b2c opt = tryIOE (createCFile opt >>= createHFile opt) >>= cleanUp
+  where cleanUp (Left exc) = tryDelete (cFileName opt) >>
+                             tryDelete (hFileName opt) >>
+                             print exc
+        cleanUp (Right _)  = return ()
+        tryDelete name = tryIOE $ removeFile name 
 
 --------------------------------------------------------------------------------
 -- | Creates the target C file.
